@@ -9,6 +9,17 @@
 tenacity (exponential backoff на 429) и построение пайплайна
 fetch → group → export.
 
+## Архитектура
+
+```mermaid
+flowchart LR
+    CLI["main.py\n--query ноутбук"] --> C["client.py\nget_products()"]
+    C -- "retry on 429\n(tenacity)" --> WB["Wildberries\nsearch.wb.ru"]
+    C -- "list[dict]" --> G["grouper.py\ngroup_products()"]
+    G -- "aggregated rows" --> S["sheets.py\nwrite_to_sheet()"]
+    S -- "gspread" --> GS[("Google\nSheets")]
+```
+
 ## Какое API используется
 
 **Wildberries** — крупнейший маркетплейс России/СНГ. При поиске на сайте
@@ -32,7 +43,7 @@ Ozon исключён: их search API требует регистрации п�
 ## Статус
 
 - [x] Phase 1 — WB API client + tenacity retry
-- [ ] Phase 2 — группировка + Google Sheets + CLI
+- [x] Phase 2 — группировка + Google Sheets + CLI
 - [ ] Phase 3 — CI + секция ограничений
 
 ## Стек
@@ -49,6 +60,52 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
+## Запуск CLI
+
+```bash
+python main.py --query "ноутбук"
+# или с лимитом
+python main.py --query "наушники" --limit 50
+```
+
+Без настроенного Google Sheets результат выводится в консоль:
+
+```
+Fetching products for 'ноутбук'...
+  87 products fetched
+  23 category/brand groups
+  Google Sheets not configured — printing to stdout:
+
+  Category             Brand            N       Avg      Min      Max  Rating
+  -----------------------------------------------------------------------
+  Ноутбуки             Lenovo          14   47 832₽   21 999₽   89 990₽    4.72
+  Ноутбуки             ASUS            11   52 450₽   24 900₽   94 990₽    4.65
+  Ноутбуки             HP               9   38 700₽   19 990₽   71 000₽    4.58
+  Ноутбуки             Acer             8   35 200₽   18 500₽   62 990₽    4.61
+  Аксессуары           Lenovo           6    2 450₽      890₽    5 990₽    4.43
+  ...
+
+Done in 1.8s
+```
+
+Полный прогон (fetch 100 товаров + группировка + вывод) занимает **~1–3 секунды**
+в зависимости от скорости ответа WB API.
+
+## Google Sheets
+
+Чтобы экспортировать результат в таблицу:
+
+1. В [Google Cloud Console](https://console.cloud.google.com/) создайте проект, включите **Google Sheets API** и **Google Drive API**.
+2. Создайте Service Account → скачайте JSON-ключ.
+3. Откройте нужный Spreadsheet и дайте Service Account email право **Editor**.
+4. Пропишите в `.env`:
+
+```env
+GOOGLE_CREDENTIALS_FILE=/path/to/service-account.json
+GOOGLE_SPREADSHEET_ID=ваш-spreadsheet-id
+GOOGLE_WORKSHEET=MarketplaceSync  # имя листа (создастся автоматически)
+```
+
 ## Тесты
 
 ```bash
@@ -56,6 +113,15 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-HTTP-запросы в тестах замоканы через `unittest.mock` — реальный доступ к WB API
-не нужен. Тест `test_get_products_retries_on_429` подаёт два 429 подряд и
-проверяет, что клиент успешно завершает запрос на третьей попытке.
+`tests/test_client.py` — клиент WB, HTTP замокан:
+- нормализация полей (priceU → price_rub)
+- retry на 429 (два фейла → успех на третьей попытке)
+- исчерпание попыток после 4× 429
+- пустой ответ
+
+`tests/test_grouper.py` — чистая логика группировки:
+- кол-во групп по (category, brand)
+- агрегаты min/avg/max price
+- агрегат avg_rating
+- сортировка по count desc
+- пустой ввод
