@@ -1,7 +1,7 @@
 import os
 
 import httpx
-from tenacity import retry, reraise, retry_if_exception, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 WB_SEARCH_URL = "https://search.wb.ru/exactmatch/ru/common/v5/search"
 
